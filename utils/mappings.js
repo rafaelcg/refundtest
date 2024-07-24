@@ -22,8 +22,9 @@ const refundMapping = {
     },
     newTOS: {
         phone: 24,
-        "web app": 16
-    }
+        "web app": 16,
+    },
+    dateCutoff: "2020-01-02"
 }
 
 module.exports = {

@@ -12,7 +12,7 @@ const app = express();
 const port = 3000;
 
 app.get('/', (req, res) => {
-    res.send('Hello World!');
+    res.sendFile(path.join(__dirname, 'public/index.html'));
 });
 
 app.get('/refunds', (req, res) => {
@@ -22,34 +22,17 @@ app.get('/refunds', (req, res) => {
     fs.createReadStream(filePath)
         .pipe(csv())
         .on('data', (data, key) => {
-            const convertToUTC = (date, time, timezone) => {
+            const convertToUTC = (date, time, timezone, requestType, isRefundRequest = false) => {
                 if (time === null) {
                     time = '12:00';
                 }
                 const [region, timeZoneAbbr] = data['Customer Location (timezone)'].split(' (');
                 const cleanTimeZoneAbbr = timeZoneAbbr.replace(')', '');
                 const timeZone = timeZoneMapping[region].timezones[cleanTimeZoneAbbr];
-                const dateObj = moment.tz(`${date}T${time}`, timeZoneMapping[region].format, timeZone);
+                let dateObj = moment.tz(`${date}T${time}`, timeZoneMapping[region].format, timeZone);
 
-                const utcTime = dateObj.utc().subtract(1, 'hour').format();
-                return utcTime;
-            };
-
-            const checkisUserNewTos = (date) => {
-                return date.isAfter(moment('2020-01-02'));
-            };
-
-            const signUpDate = convertToUTC(data['Sign up date'], '00:00', data['Customer Location (timezone)']);
-            const investmentDate = convertToUTC(data['Investment Date'], data['Investment Time'], data['Customer Location (timezone)']);
-            const refundRequestDate = convertToUTC(data['Refund Request Date'], data['Refund Request Time'], data['Customer Location (timezone)']);
-
-            const isNewTOS = checkisUserNewTos(moment(signUpDate));
-
-            const checkRefundAllowed = (investmentDate, refundRequestDate, requestType, isNewTOS) => {
-                const refundHours = isNewTOS ? refundMapping.newTOS[requestType] : refundMapping.oldTOS[requestType];
-
-                if (requestType === 'phone') {
-                    const ukTime = moment.tz(refundRequestDate, 'Europe/London');
+                if (isRefundRequest && requestType === 'phone') {
+                    const ukTime = dateObj.clone().tz('Europe/London');
                     const dayOfWeek = ukTime.day();
                     const hourOfDay = ukTime.hour();
 
@@ -64,24 +47,43 @@ app.get('/refunds', (req, res) => {
                             ukTime.add(1, 'day');
                         }
 
-                        refundRequestDate = ukTime.utc();
+                        dateObj = ukTime.utc();
                     }
+                } else {
+                    dateObj = dateObj.utc().subtract(1, 'hour');
                 }
+
+                return dateObj.format();
+            };
+
+            const checkisUserNewTos = (date) => {
+                return date.isAfter(moment(refundMapping.dateCutoff));
+            };
+
+            const signUpDate = convertToUTC(data['Sign up date'], '00:00', data['Customer Location (timezone)'], data['Request Source']);
+            const investmentDate = convertToUTC(data['Investment Date'], data['Investment Time'], data['Customer Location (timezone)'], data['Request Source']);
+            const refundRequestDate = convertToUTC(data['Refund Request Date'], data['Refund Request Time'], data['Customer Location (timezone)'], data['Request Source'], true);
+
+            const isNewTOS = checkisUserNewTos(moment(signUpDate));
+
+            const checkRefundAllowed = (investmentDate, refundRequestDate, requestType, isNewTOS) => {
+                const refundHours = isNewTOS ? refundMapping.newTOS[requestType] : refundMapping.oldTOS[requestType];
+
+                console.log('refundRequestDate', refundRequestDate);
+                console.log('investmentDate', investmentDate);
+                console.log('refundHours', refundHours);
 
                 return !refundRequestDate.isAfter(investmentDate.add(refundHours, 'hours'));
             };
 
             const normalizedData = {
                 name: data.Name,
-                timezone: data['Customer Location (timezone)'],
-                signUpDate: convertToUTC(data['Sign up date'], null, data['Customer Location (timezone)']),
+                signUpDate: convertToUTC(data['Sign up date'], null, data['Customer Location (timezone)'], data['Request Source']),
                 requestSource: data['Request Source'],
-                investmentDate: convertToUTC(data['Investment Date'], data['Investment Time'], data['Customer Location (timezone)']),
-                refundRequestDate: convertToUTC(data['Refund Request Date'], data['Refund Request Time'], data['Customer Location (timezone)']),
+                investmentDate: convertToUTC(data['Investment Date'], data['Investment Time'], data['Customer Location (timezone)'], data['Request Source']),
+                refundRequestDate: convertToUTC(data['Refund Request Date'], data['Refund Request Time'], data['Customer Location (timezone)'], data['Request Source'], true),
                 isNewTOS: isNewTOS,
                 isRefundAllowed: checkRefundAllowed(moment(investmentDate), moment(refundRequestDate), data['Request Source'], isNewTOS),
-                refundAllowedAmountHours: refundMapping[isNewTOS ? 'newTOS' : 'oldTOS'][data['Request Source']],
-                dayOfWeekRequest: moment(refundRequestDate).format('dddd'),
             };
 
             results.push(normalizedData);
@@ -90,9 +92,6 @@ app.get('/refunds', (req, res) => {
             res.json(results);
         });
 });
-
-
-
 
 app.listen(port, () => {
     console.log(`Example app listening at http://localhost:${port}`);
